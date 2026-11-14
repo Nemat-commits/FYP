@@ -6,6 +6,9 @@ on:
       - "arena/**"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -29,11 +32,11 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      - name: Build debug APK
+      - name: Build ARM64 APK
         shell: bash
         run: |
           set +e
-          flutter build apk --debug > build-output.log 2>&1
+          flutter build apk --release --target-platform android-arm64 > build-output.log 2>&1
           result=$?
           cat build-output.log
           if [ "$result" -ne 0 ]; then
@@ -52,4 +55,16 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: terrastep-debug-apk
-          path: build/app/outputs/flutter-apk/app-debug.apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Publish installable APK to branch
+        run: |
+          mkdir -p releases
+          cp build/app/outputs/flutter-apk/app-release.apk releases/terrastep-milestone30-arm64.apk
+          sha256sum releases/terrastep-milestone30-arm64.apk > releases/SHA256SUMS
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add releases/terrastep-milestone30-arm64.apk releases/SHA256SUMS
+          git diff --cached --quiet && exit 0
+          git commit -m "Publish installable Terrastep ARM64 APK [skip ci]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
