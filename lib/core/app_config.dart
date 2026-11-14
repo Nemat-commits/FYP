@@ -1,7 +1,8 @@
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
 
 class AppConfig {
-  static const String envMapboxToken = String.fromEnvironment(
+  static const String mapboxPublicToken = String.fromEnvironment(
     'MAPBOX_ACCESS_TOKEN',
     defaultValue: '',
   );
@@ -10,13 +11,16 @@ class AppConfig {
   static const double abbottabadLon = 73.2215;
 
   static Future<String> getEffectiveMapboxToken() async {
-    if (envMapboxToken.isNotEmpty) return envMapboxToken;
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString('mapbox_public_token') ?? '';
+    return prefs.getString('mapbox_public_token') ?? mapboxPublicToken;
   }
 
   static Future<void> saveMapboxToken(String token) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('mapbox_public_token', token.trim());
+  }
+
+  static void initializeMapbox() {
+    MapboxOptions.setAccessToken(mapboxPublicToken);
   }
 }

@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
-
-import 'screens/diagnostics_screen.dart';
-import 'screens/gpx_history_screen.dart';
 import 'screens/live_map_screen.dart';
+import 'screens/gpx_history_screen.dart';
+import 'screens/diagnostics_screen.dart';
 
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
@@ -12,9 +11,9 @@ class HomeShell extends StatefulWidget {
 }
 
 class _HomeShellState extends State<HomeShell> {
-  int _index = 0;
+  int _currentIndex = 0;
 
-  static const _pages = [
+  final List<Widget> _screens = const [
     LiveMapScreen(),
     GpxHistoryScreen(),
     DiagnosticsScreen(),
@@ -23,22 +22,28 @@ class _HomeShellState extends State<HomeShell> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(index: _index, children: _pages),
+      body: IndexedStack(
+        index: _currentIndex,
+        children: _screens,
+      ),
       bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
+        selectedIndex: _currentIndex,
+        onDestinationSelected: (idx) => setState(() => _currentIndex = idx),
         destinations: const [
           NavigationDestination(
-            icon: Icon(Icons.map),
-            label: 'Live Map',
+            icon: Icon(Icons.map_outlined),
+            selectedIcon: Icon(Icons.map),
+            label: 'Start & Map',
           ),
           NavigationDestination(
-            icon: Icon(Icons.route),
-            label: 'GPX History',
+            icon: Icon(Icons.route_outlined),
+            selectedIcon: Icon(Icons.route),
+            label: 'GPX & History',
           ),
           NavigationDestination(
-            icon: Icon(Icons.monitor_heart),
-            label: 'Diagnostics',
+            icon: Icon(Icons.sensors_outlined),
+            selectedIcon: Icon(Icons.sensors),
+            label: '30% Check',
           ),
         ],
       ),

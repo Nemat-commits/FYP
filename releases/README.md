@@ -1,40 +1,34 @@
-# Terrastep releases
+# Terrastep 30% milestone APK
 
-APK builds land here after a local `flutter build`. This folder is the
-**only** place where `*.apk` files are allowed in Git (see `.gitignore`
-exception below). Everywhere else APKs stay blocked.
+`terrastep-milestone30-arm64.apk` is built by GitHub Actions for ARM64 Android
+phones (Android 8.0 / API 26 or newer). Verify it with `sha256sum -c releases/SHA256SUMS`.
+The release-mode APK uses the development debug signing key; it is for evaluation,
+not Play Store distribution. CI rebuilds and publishes it on this working branch.
 
-## Build (on your machine, with Flutter SDK installed)
+## Revised blueprint
 
-```bash
-flutter pub get
-flutter analyze
-flutter build apk --debug
-# or, with your Mapbox public token baked in:
-flutter build apk --debug --dart-define=MAPBOX_ACCESS_TOKEN=pk.xxx
-```
+- Mapbox token injected at build time from the `MAPBOX_ACCESS_TOKEN` Actions secret.
+  Configure that repository secret before rebuilding; GitHub blocked the supplied
+  token in source. The checked-in APK still represents the previous successful build.
+- Dark map-first UI with GPS accuracy, hardware steps, distance, moving time and cadence.
+- Outdoors, Dark, Satellite Streets and Standard styles; follow and 3D pitch controls.
+- Local GPX history, raw XML inspection/copy, Downloads export and Android sharing.
+- Diagnostics for the three milestone requirements. No cloud backend or authentication.
 
-Output: `build/app/outputs/flutter-apk/app-debug.apk`
+Mapbox is pinned to **2.8.0**, within the blueprint's `^2.3.0` range, because exact
+2.3.0 required a private SDK download token in CI. Flutter 3.27.4, Java 17 and the
+verified Gradle configuration are retained. For local builds, the public token can be supplied
+with `--dart-define=MAPBOX_ACCESS_TOKEN=pk.xxx`.
 
-## Save the APK here
+## Validation on a physical phone
 
-```bash
-cp build/app/outputs/flutter-apk/app-debug.apk releases/terrastep-v0.3.0-debug.apk
-git add releases/terrastep-v0.3.0-debug.apk
-git commit -m "Add Terrastep v0.3.0 debug APK"
-git push origin arena/69fd0e77-fyp
-```
+1. Install the APK; allow location, physical activity and notification permissions.
+2. Confirm map tiles load, switch all four styles, toggle follow and 3D pitch.
+3. Start walking outdoors. Check steps and route update; pause/resume and test screen-off recording.
+4. Finish; open GPX & History and refresh. Inspect XML, share it and export to Downloads.
+5. Generate the clearly labelled Abbottabad demo fixture and inspect its GPX.
+6. Refresh 30% Check to inspect sensor availability and latest GPS fix.
 
-## Recommended alternative (keeps Git small)
-
-APKs are 40–55 MB each and stay in Git history forever, slowing every
-clone. The preferred home for builds is Google Drive:
-`TerraSteps - FYP / 04_Builds_&_Defense_Archive` (where the v0.1.10 and
-v0.3.0 APKs already live), or a GitHub Release asset:
-
-```bash
-gh release create v0.3.0 releases/terrastep-v0.3.0-debug.apk --title "Terrastep v0.3.0"
-```
-
-Only commit APKs into this folder if you explicitly want them versioned
-in Git history.
+CI analysis/build success does not verify token validity, GPS quality or sensor
+behaviour on a physical phone. The hex overlay uses the blueprint's local Kotlin
+hex approximation, not canonical globally indexed H3 cells.

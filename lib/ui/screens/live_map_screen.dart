@@ -1,372 +1,416 @@
+import 'dart:async';
 import 'dart:convert';
-
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:share_plus/share_plus.dart';
-
 import '../../core/app_config.dart';
-import '../../models/walk_models.dart';
-import '../../state/walk_providers.dart';
+import '../../services/native_tracker_bridge.dart';
 
-/// Live Mapbox canvas with emerald route polyline + H3 hex overlay (Blueprint 5.3).
-class LiveMapScreen extends ConsumerStatefulWidget {
+class LiveMapScreen extends StatefulWidget {
   const LiveMapScreen({super.key});
 
   @override
-  ConsumerState<LiveMapScreen> createState() => _LiveMapScreenState();
+  State<LiveMapScreen> createState() => _LiveMapScreenState();
 }
 
-class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
-  MapboxMap? _map;
-  bool _styleReady = false;
-  bool _follow = true;
-  double _pitch = 0;
-  String _styleUri = MapboxStyles.OUTDOORS;
-  String? _token;
-  bool _busy = false;
+class _LiveMapScreenState extends State<LiveMapScreen> {
+  MapboxMap? _mapboxMap;
+  StreamSubscription<Map<String, dynamic>>? _sub;
+  Map<String, dynamic> _telemetry = {
+    'status': 'IDLE',
+    'steps': 0,
+    'distanceMeters': 0.0,
+    'movingDurationMs': 0,
+    'cadenceSpm': 0.0,
+    'latitude': AppConfig.abbottabadLat,
+    'longitude': AppConfig.abbottabadLon,
+    'accuracyMeters': 0.0,
+    'currentHexId': 'h3r9_0_0',
+    'visitedHexCount': 0,
+    'polylines': [],
+    'hexPolygons': [],
+  };
 
-  static const _routeSourceId = 'walk-route-source';
-  static const _routeLayerId = 'walk-route-layer';
-  static const _hexSourceId = 'hex-grid-source';
-  static const _hexFillId = 'hex-grid-fill';
-  static const _hexOutlineId = 'hex-grid-outline';
+  bool _followUser = true;
+  bool _is3DPitch = false;
+  String _currentStyle = MapboxStyles.OUTDOORS;
+  bool _layersInitialized = false;
 
   @override
   void initState() {
     super.initState();
-    _loadToken();
-    _requestPermissions();
-  }
-
-  Future<void> _loadToken() async {
-    final token = await AppConfig.getEffectiveMapboxToken();
-    if (!mounted) return;
-    setState(() => _token = token.isEmpty ? null : token);
-    if (token.isNotEmpty) {
-      MapboxOptions.setAccessToken(token);
-    }
-  }
-
-  Future<void> _requestPermissions() async {
-    await [
-      Permission.location,
-      Permission.activityRecognition,
-      Permission.notification,
-    ].request();
-  }
-
-  // ---------- GeoJSON builders ----------
-
-  String _routeGeoJson(TelemetryState t) {
-    final coords = t.routeCoordinates
-        .where((seg) => seg.length >= 2)
-        .map((seg) => seg.map((p) => [p[0], p[1]]).toList())
-        .toList();
-    return jsonEncode({
-      'type': 'FeatureCollection',
-      'features': [
-        {
-          'type': 'Feature',
-          'properties': <String, dynamic>{},
-          'geometry': {
-            'type': 'MultiLineString',
-            'coordinates': coords,
-          },
-        }
-      ],
+    _sub = NativeTrackerBridge.telemetryStream.listen((data) {
+      if (!mounted) return;
+      setState(() => _telemetry = data);
+      _updateMapLayersAndCamera(data);
     });
   }
 
-  String _hexGeoJson(TelemetryState t) {
-    final features = t.hexPolygons.map((h) {
-      return {
-        'type': 'Feature',
-        'properties': {'hexId': h.hexId},
-        'geometry': {
-          'type': 'Polygon',
-          'coordinates': [
-            h.ring.map((p) => [p[0], p[1]]).toList()
-          ],
-        },
-      };
-    }).toList();
-    return jsonEncode({'type': 'FeatureCollection', 'features': features});
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
   }
 
-  Future<void> _addLayers(TelemetryState t) async {
-    final map = _map;
+  Future<void> _onMapCreated(MapboxMap mapboxMap) async {
+    _mapboxMap = mapboxMap;
+    await mapboxMap.location.updateSettings(
+      LocationComponentSettings(
+        enabled: true,
+        pulsingEnabled: true,
+        showAccuracyRing: true,
+      ),
+    );
+  }
+
+  Future<void> _onStyleLoaded(StyleLoadedEventData event) async {
+    final map = _mapboxMap;
     if (map == null) return;
+    _layersInitialized = false;
+
     try {
       await map.style.addSource(
-        GeoJsonSource(id: _routeSourceId, data: _routeGeoJson(t)),
+        GeoJsonSource(
+          id: 'hex-grid-source',
+          data: jsonEncode({'type': 'FeatureCollection', 'features': []}),
+        ),
+      );
+      await map.style.addLayer(
+        FillLayer(
+          id: 'hex-grid-fill',
+          sourceId: 'hex-grid-source',
+          fillColor: 0xFF10B981,
+          fillOpacity: 0.28,
+        ),
       );
       await map.style.addLayer(
         LineLayer(
-          id: _routeLayerId,
-          sourceId: _routeSourceId,
+          id: 'hex-grid-outline',
+          sourceId: 'hex-grid-source',
+          lineColor: 0xFF047857,
+          lineWidth: 2.0,
+        ),
+      );
+
+      await map.style.addSource(
+        GeoJsonSource(
+          id: 'walk-route-source',
+          data: jsonEncode({'type': 'FeatureCollection', 'features': []}),
+        ),
+      );
+      await map.style.addLayer(
+        LineLayer(
+          id: 'walk-route-layer',
+          sourceId: 'walk-route-source',
           lineColor: 0xFF10B981,
           lineWidth: 5.5,
           lineCap: LineCap.ROUND,
           lineJoin: LineJoin.ROUND,
         ),
       );
-      await map.style.addSource(
-        GeoJsonSource(id: _hexSourceId, data: _hexGeoJson(t)),
-      );
-      await map.style.addLayer(
-        FillLayer(
-          id: _hexFillId,
-          sourceId: _hexSourceId,
-          fillColor: 0xFF10B981,
-          fillOpacity: 0.25,
-        ),
-      );
-      await map.style.addLayer(
-        LineLayer(
-          id: _hexOutlineId,
-          sourceId: _hexSourceId,
-          lineColor: 0xFF047857,
-          lineWidth: 2.0,
-        ),
-      );
-      _styleReady = true;
-    } catch (_) {
-      // Sources may already exist after a style reload; ignore duplicates.
-      _styleReady = true;
-    }
-  }
-
-  Future<void> _syncLayers(TelemetryState t) async {
-    final map = _map;
-    if (map == null || !_styleReady) return;
-    try {
-      await map.style.setStyleSourceProperty(_routeSourceId, 'data', _routeGeoJson(t));
-      await map.style.setStyleSourceProperty(_hexSourceId, 'data', _hexGeoJson(t));
+      _layersInitialized = true;
+      await _updateMapLayersAndCamera(_telemetry);
     } catch (_) {}
-    if (_follow) {
-      try {
-        await map.setCamera(
-          CameraOptions(
-            center: Point(coordinates: Position(t.longitude, t.latitude)),
-            zoom: 16,
-            bearing: 0,
-            pitch: _pitch,
-          ),
-        );
-      } catch (_) {}
-    }
   }
 
-  // ---------- Actions ----------
+  Future<void> _updateMapLayersAndCamera(Map<String, dynamic> data) async {
+    final map = _mapboxMap;
+    if (map == null || !_layersInitialized) return;
 
-  Future<void> _start() async {
-    setState(() => _busy = true);
-    try {
-      await _requestPermissions();
-      await ref.read(telemetryProvider.notifier).startWalk();
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Start failed: $e')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
+    final rawPolylines = (data['polylines'] as List?) ?? [];
+    final multiLineCoords = rawPolylines
+        .map((seg) => (seg as List)
+            .map((pt) => [(pt as List)[0] as num, pt[1] as num])
+            .toList())
+        .where((seg) => seg.length >= 2)
+        .toList();
 
-  Future<void> _pauseResume(bool isPaused) async {
-    setState(() => _busy = true);
-    try {
-      if (isPaused) {
-        await ref.read(telemetryProvider.notifier).resumeWalk();
-      } else {
-        await ref.read(telemetryProvider.notifier).pauseWalk();
-      }
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _finish() async {
-    setState(() => _busy = true);
-    try {
-      final res = await ref.read(telemetryProvider.notifier).finishWalk();
-      final path = (res['gpxFilePath'] ?? '').toString();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Walk saved • ${res['pointCount'] ?? 0} points'),
-          action: SnackBarAction(
-            label: 'View & Share GPX',
-            onPressed: () {
-              if (path.isNotEmpty) {
-                Share.shareXFiles([XFile(path)], text: 'Terrastep GPX export');
-              }
+    final routeGeoJson = {
+      'type': 'FeatureCollection',
+      'features': [
+        if (multiLineCoords.isNotEmpty)
+          {
+            'type': 'Feature',
+            'geometry': {
+              'type': 'MultiLineString',
+              'coordinates': multiLineCoords,
             },
-          ),
-          duration: const Duration(seconds: 8),
+            'properties': {},
+          }
+      ],
+    };
+
+    final rawHexes = (data['hexPolygons'] as List?) ?? [];
+    final hexFeatures = rawHexes.map((h) {
+      final hMap = Map<String, dynamic>.from(h as Map);
+      final ring = (hMap['ring'] as List)
+          .map((pt) => [(pt as List)[0] as num, pt[1] as num])
+          .toList();
+      return {
+        'type': 'Feature',
+        'geometry': {
+          'type': 'Polygon',
+          'coordinates': [ring],
+        },
+        'properties': {'hexId': hMap['hexId']},
+      };
+    }).toList();
+
+    final hexGeoJson = {
+      'type': 'FeatureCollection',
+      'features': hexFeatures,
+    };
+
+    try {
+      await map.style.setStyleSourceProperty('walk-route-source', 'data', jsonEncode(routeGeoJson));
+
+      await map.style.setStyleSourceProperty('hex-grid-source', 'data', jsonEncode(hexGeoJson));
+    } catch (_) {}
+
+    if (_followUser) {
+      final lat = (data['latitude'] as num?)?.toDouble() ?? AppConfig.abbottabadLat;
+      final lon = (data['longitude'] as num?)?.toDouble() ?? AppConfig.abbottabadLon;
+      await map.flyTo(
+        CameraOptions(
+          center: Point(coordinates: Position(lon, lat)),
+          zoom: 16.2,
+          pitch: _is3DPitch ? 45.0 : 0.0,
         ),
+        MapAnimationOptions(duration: 500),
       );
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Finish failed: $e')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _busy = false);
     }
   }
 
-  Future<void> _showTokenDialog() async {
-    final controller = TextEditingController(text: _token ?? '');
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Mapbox Token Setup'),
-        content: TextField(
-          controller: controller,
-          decoration: const InputDecoration(
-            labelText: 'Public token (pk.xxx)',
-            hintText: 'Paste your Mapbox public token',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-    if (saved == true) {
-      await ref.read(mapboxTokenProvider.notifier).save(controller.text.trim());
-      await _loadToken();
-      if (mounted) setState(() {});
-    }
-    controller.dispose();
+  String _formatDuration(int ms) {
+    final totalSec = ms ~/ 1000;
+    final mins = (totalSec ~/ 60).toString().padLeft(2, '0');
+    final secs = (totalSec % 60).toString().padLeft(2, '0');
+    return '$mins:$secs';
   }
 
-  // ---------- Build ----------
+  void _cycleStyle() {
+    final styles = [
+      MapboxStyles.OUTDOORS,
+      MapboxStyles.DARK,
+      MapboxStyles.SATELLITE_STREETS,
+      MapboxStyles.STANDARD,
+    ];
+    final nextIdx = (styles.indexOf(_currentStyle) + 1) % styles.length;
+    setState(() => _currentStyle = styles[nextIdx]);
+    _mapboxMap?.loadStyleURI(_currentStyle);
+  }
 
   @override
   Widget build(BuildContext context) {
-    final telemetry = ref.watch(telemetryProvider);
-    final tokenAsync = ref.watch(mapboxTokenProvider);
-
-    // Keep GeoJSON layers in sync with telemetry.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _syncLayers(telemetry));
+    final status = (_telemetry['status'] as String?) ?? 'IDLE';
+    final steps = (_telemetry['steps'] as num?)?.toInt() ?? 0;
+    final distM = (_telemetry['distanceMeters'] as num?)?.toDouble() ?? 0.0;
+    final movingMs = (_telemetry['movingDurationMs'] as num?)?.toInt() ?? 0;
+    final cadence = (_telemetry['cadenceSpm'] as num?)?.toDouble() ?? 0.0;
+    final accM = (_telemetry['accuracyMeters'] as num?)?.toDouble() ?? 0.0;
+    final hexId = (_telemetry['currentHexId'] as String?) ?? 'h3r9_0_0';
+    final hexCount = (_telemetry['visitedHexCount'] as num?)?.toInt() ?? 0;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Terrastep • Live Map'),
-        actions: [
-          IconButton(
-            tooltip: 'Mapbox token',
-            icon: const Icon(Icons.key),
-            onPressed: _showTokenDialog,
-          ),
-        ],
-      ),
       body: Stack(
         children: [
-          // Map (or placeholder when token missing)
-          if (_token == null || _token!.isEmpty)
-            _NoTokenPlaceholder(onSetup: _showTokenDialog)
-          else
-            MapWidget(
-              styleUri: _styleUri,
-              cameraOptions: CameraOptions(
-                center: Point(
-                  coordinates: Position(telemetry.longitude, telemetry.latitude),
+          MapWidget(
+            key: const ValueKey('terrastep_mapbox_map'),
+            styleUri: _currentStyle,
+            cameraOptions: CameraOptions(
+              center: Point(
+                coordinates: Position(
+                  AppConfig.abbottabadLon,
+                  AppConfig.abbottabadLat,
                 ),
-                zoom: 16,
-                bearing: 0,
-                pitch: _pitch,
               ),
-              onMapCreated: (controller) {
-                _map = controller;
-              },
-              onStyleLoadedListener: (controller) async {
-                await _addLayers(telemetry);
-              },
+              zoom: 15.5,
             ),
+            onMapCreated: _onMapCreated,
+            onStyleLoadedListener: _onStyleLoaded,
+          ),
 
-          // Top-right controls: follow, pitch, style
+          // Top Telemetry Pill
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xDD0F172A),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: const Color(0xFF10B981).withOpacity(0.4)),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.gps_fixed, color: Color(0xFF10B981), size: 18),
+                              const SizedBox(width: 6),
+                              Text(
+                                accM > 0 ? 'GPS ±${accM.toStringAsFixed(1)}m' : 'GPS Ready',
+                                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                              ),
+                            ],
+                          ),
+                          Text(
+                            'Hex: $hexId ($hexCount)',
+                            style: const TextStyle(color: Color(0xFF34D399), fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // Right-Side Floating Map API Controls
           Positioned(
-            top: 12,
             right: 12,
+            top: 90,
             child: Column(
               children: [
                 FloatingActionButton.small(
-                  heroTag: 'follow',
-                  tooltip: 'Follow GPS lock',
-                  onPressed: () => setState(() => _follow = !_follow),
-                  child: Icon(_follow ? Icons.gps_fixed : Icons.gps_not_fixed),
+                  heroTag: 'follow_btn',
+                  backgroundColor: _followUser ? const Color(0xFF059669) : const Color(0xDD0F172A),
+                  onPressed: () {
+                    setState(() => _followUser = !_followUser);
+                    if (_followUser) _updateMapLayersAndCamera(_telemetry);
+                  },
+                  child: Icon(_followUser ? Icons.my_location : Icons.location_searching),
                 ),
                 const SizedBox(height: 8),
                 FloatingActionButton.small(
-                  heroTag: 'pitch',
-                  tooltip: '3D pitch 0° / 45°',
+                  heroTag: 'pitch_btn',
+                  backgroundColor: _is3DPitch ? const Color(0xFF059669) : const Color(0xDD0F172A),
                   onPressed: () {
-                    setState(() => _pitch = _pitch == 0 ? 45 : 0);
-                    _map?.setCamera(
-                      CameraOptions(
-                        center: Point(
-                          coordinates: Position(telemetry.longitude, telemetry.latitude),
-                        ),
-                        zoom: 16,
-                        bearing: 0,
-                        pitch: _pitch,
-                      ),
-                    );
+                    setState(() => _is3DPitch = !_is3DPitch);
+                    _updateMapLayersAndCamera(_telemetry);
                   },
-                  child: const Icon(Icons.view_in_ar),
+                  child: const Text('3D', style: TextStyle(fontWeight: FontWeight.bold)),
                 ),
                 const SizedBox(height: 8),
-                PopupMenuButton<String>(
-                  tooltip: 'Map style',
-                  onSelected: (uri) {
-                    setState(() {
-                      _styleUri = uri;
-                      _styleReady = false;
-                    });
-                    _map?.loadStyleURI(uri);
-                  },
-                  itemBuilder: (ctx) => const [
-                    PopupMenuItem(value: MapboxStyles.OUTDOORS, child: Text('Outdoors')),
-                    PopupMenuItem(value: MapboxStyles.DARK, child: Text('Dark')),
-                    PopupMenuItem(value: MapboxStyles.STANDARD, child: Text('Standard')),
-                  ],
-                  child: FloatingActionButton.small(
-                    onPressed: null,
-                    heroTag: 'style',
-                    child: Icon(Icons.layers),
-                  ),
+                FloatingActionButton.small(
+                  heroTag: 'style_btn',
+                  backgroundColor: const Color(0xDD0F172A),
+                  onPressed: _cycleStyle,
+                  child: const Icon(Icons.layers),
                 ),
               ],
             ),
           ),
 
-          // Bottom HUD
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: _RecorderHud(
-              telemetry: telemetry,
-              busy: _busy,
-              tokenLoading: tokenAsync.isLoading,
-              onStart: _start,
-              onPauseResume: _pauseResume,
-              onFinish: _finish,
+          // Bottom Recorder & Step Counter HUD
+          Align(
+            alignment: Alignment.bottomCenter,
+            child: Container(
+              margin: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xF00F172A),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.white12),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      _MetricTile(
+                        label: 'STEPS',
+                        value: '$steps',
+                        icon: Icons.directions_walk,
+                        accent: const Color(0xFF10B981),
+                      ),
+                      _MetricTile(
+                        label: 'DISTANCE',
+                        value: '${(distM / 1000.0).toStringAsFixed(2)} km',
+                        icon: Icons.straighten,
+                      ),
+                      _MetricTile(
+                        label: 'MOVING TIME',
+                        value: _formatDuration(movingMs),
+                        icon: Icons.timer_outlined,
+                      ),
+                      _MetricTile(
+                        label: 'CADENCE',
+                        value: '${cadence.toStringAsFixed(0)} spm',
+                        icon: Icons.speed,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  if (status == 'IDLE')
+                    SizedBox(
+                      width: double.infinity,
+                      height: 52,
+                      child: FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFF059669),
+                          foregroundColor: Colors.white,
+                        ),
+                        onPressed: () => NativeTrackerBridge.startWalk(),
+                        icon: const Icon(Icons.play_arrow),
+                        label: const Text(
+                          'Start Walk (Step + GPS + GPX)',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    )
+                  else
+                    Row(
+                      children: [
+                        Expanded(
+                          child: SizedBox(
+                            height: 50,
+                            child: OutlinedButton.icon(
+                              onPressed: () {
+                                if (status == 'RECORDING') {
+                                  NativeTrackerBridge.pauseWalk();
+                                } else {
+                                  NativeTrackerBridge.resumeWalk();
+                                }
+                              },
+                              icon: Icon(status == 'RECORDING' ? Icons.pause : Icons.play_arrow),
+                              label: Text(status == 'RECORDING' ? 'Pause' : 'Resume'),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: SizedBox(
+                            height: 50,
+                            child: FilledButton.icon(
+                              style: FilledButton.styleFrom(
+                                backgroundColor: const Color(0xFFDC2626),
+                                foregroundColor: Colors.white,
+                              ),
+                              onPressed: () async {
+                                final res = await NativeTrackerBridge.finishWalk();
+                                if (!context.mounted) return;
+                                final path = res['gpxFilePath'] ?? '';
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('Saved GPX (${res['totalSteps']} steps): $path'),
+                                    duration: const Duration(seconds: 4),
+                                  ),
+                                );
+                              },
+                              icon: const Icon(Icons.stop),
+                              label: const Text('Finish & Save GPX'),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
             ),
           ),
         ],
@@ -375,148 +419,37 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
   }
 }
 
-class _NoTokenPlaceholder extends StatelessWidget {
-  final VoidCallback onSetup;
-  const _NoTokenPlaceholder({required this.onSetup});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      color: const Color(0xFFECFDF5),
-      alignment: Alignment.center,
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(Icons.map, size: 64, color: Color(0xFF10B981)),
-          const SizedBox(height: 16),
-          const Text(
-            'Mapbox token required',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Add your public token (pk.xxx) to show the live map, or build with --dart-define=MAPBOX_ACCESS_TOKEN=pk.xxx',
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 16),
-          FilledButton.icon(
-            onPressed: onSetup,
-            icon: const Icon(Icons.key),
-            label: const Text('Set token'),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _RecorderHud extends StatelessWidget {
-  final TelemetryState telemetry;
-  final bool busy;
-  final bool tokenLoading;
-  final VoidCallback onStart;
-  final void Function(bool isPaused) onPauseResume;
-  final VoidCallback onFinish;
-
-  const _RecorderHud({
-    required this.telemetry,
-    required this.busy,
-    required this.tokenLoading,
-    required this.onStart,
-    required this.onPauseResume,
-    required this.onFinish,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final status = telemetry.status;
-    return Container(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.96),
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-        boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 12)],
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              _Stat(label: 'Steps', value: '${telemetry.steps}'),
-              _Stat(label: 'Distance', value: formatDistance(telemetry.distanceMeters)),
-              _Stat(label: 'Moving', value: formatMmSs(telemetry.movingDurationMs)),
-              _Stat(label: 'Cadence', value: '${telemetry.cadenceSpm.toStringAsFixed(0)}/min'),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                'Status: $status',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-              Flexible(
-                child: Text(
-                  telemetry.currentHexId,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: busy || telemetry.isActive ? null : onStart,
-                  icon: const Icon(Icons.play_arrow),
-                  label: const Text('Start Walk'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: busy || !telemetry.isActive
-                      ? null
-                      : () => onPauseResume(telemetry.isPaused),
-                  icon: Icon(telemetry.isPaused ? Icons.play_arrow : Icons.pause),
-                  label: Text(telemetry.isPaused ? 'Resume' : 'Pause'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: busy || !telemetry.isActive ? null : onFinish,
-                  icon: const Icon(Icons.stop),
-                  label: const Text('Finish & Save GPX'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFF047857),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _Stat extends StatelessWidget {
+class _MetricTile extends StatelessWidget {
   final String label;
   final String value;
-  const _Stat({required this.label, required this.value});
+  final IconData icon;
+  final Color? accent;
+
+  const _MetricTile({
+    required this.label,
+    required this.value,
+    required this.icon,
+    this.accent,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-        Text(label, style: const TextStyle(fontSize: 11, color: Colors.black54)),
+        Icon(icon, size: 18, color: accent ?? Colors.white70),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+            color: accent ?? Colors.white,
+          ),
+        ),
+        Text(
+          label,
+          style: const TextStyle(fontSize: 10, color: Colors.white60),
+        ),
       ],
     );
   }

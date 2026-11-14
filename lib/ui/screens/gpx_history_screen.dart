@@ -1,224 +1,202 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart';
+import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
+import '../../services/native_tracker_bridge.dart';
 
-import '../../models/walk_models.dart';
-import '../../state/walk_providers.dart';
-
-/// Saved walks from Room with GPX view / share / export (Blueprint 30% scope).
-class GpxHistoryScreen extends ConsumerWidget {
+class GpxHistoryScreen extends StatefulWidget {
   const GpxHistoryScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final sessionsAsync = ref.watch(sessionsProvider);
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('GPX History'),
-        actions: [
-          IconButton(
-            tooltip: 'Refresh',
-            icon: const Icon(Icons.refresh),
-            onPressed: () => ref.read(sessionsProvider.notifier).refresh(),
-          ),
-        ],
-      ),
-      body: sessionsAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('Failed to load sessions:\n$e')),
-        data: (sessions) {
-          if (sessions.isEmpty) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.route, size: 64, color: Color(0xFF10B981)),
-                    const SizedBox(height: 16),
-                    const Text(
-                      'No saved walks yet',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Record a walk on the Live Map, or generate a demo Abbottabad walk for the presentation.',
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 16),
-                    FilledButton.icon(
-                      onPressed: () async {
-                        await ref.read(sessionsProvider.notifier).generateDemoWalk();
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Demo walk generated')),
-                          );
-                        }
-                      },
-                      icon: const Icon(Icons.science),
-                      label: const Text('Generate demo walk'),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }
-          return RefreshIndicator(
-            onRefresh: () => ref.read(sessionsProvider.notifier).refresh(),
-            child: ListView.builder(
-              itemCount: sessions.length,
-              itemBuilder: (context, i) {
-                final s = sessions[i];
-                return _SessionCard(session: s);
-              },
-            ),
-          );
-        },
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () async {
-          await ref.read(sessionsProvider.notifier).generateDemoWalk();
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Demo walk generated')),
-            );
-          }
-        },
-        icon: const Icon(Icons.science),
-        label: const Text('Demo walk'),
-      ),
-    );
-  }
+  State<GpxHistoryScreen> createState() => _GpxHistoryScreenState();
 }
 
-class _SessionCard extends ConsumerWidget {
-  final WalkSession session;
-  const _SessionCard({required this.session});
+class _GpxHistoryScreenState extends State<GpxHistoryScreen> {
+  List<Map<String, dynamic>> _sessions = [];
+  bool _loading = true;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final dateFmt = DateFormat('dd MMM yyyy, hh:mm a');
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      child: ListTile(
-        leading: const CircleAvatar(
-          backgroundColor: Color(0xFF10B981),
-          child: Icon(Icons.route, color: Colors.white),
-        ),
-        title: Text(session.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-        subtitle: Text(
-          '${dateFmt.format(session.startDateTime)} • '
-          '${session.totalSteps} steps • ${formatDistance(session.totalDistanceMeters)} • '
-          '${formatMmSs(session.movingDurationMs)}',
-        ),
-        trailing: Chip(label: Text(session.status)),
-        onTap: () => _openDetail(context, ref),
-      ),
-    );
+  void initState() {
+    super.initState();
+    _refresh();
   }
 
-  Future<void> _openDetail(BuildContext context, WidgetRef ref) async {
-    showDialog<void>(
+  Future<void> _refresh() async {
+    setState(() => _loading = true);
+    final list = await NativeTrackerBridge.getSavedSessions();
+    if (!mounted) return;
+    setState(() {
+      _sessions = list;
+      _loading = false;
+    });
+  }
+
+  Future<void> _inspectGpx(String sessionId, String title) async {
+    final detail = await NativeTrackerBridge.getSessionDetail(sessionId);
+    if (!mounted) return;
+    final xml = (detail['gpxXml'] as String?) ?? '';
+    final path = (detail['gpxFilePath'] as String?) ?? '';
+
+    showModalBottomSheet(
       context: context,
-      builder: (_) => const Center(child: CircularProgressIndicator()),
-    );
-    try {
-      final detail = await ref.read(sessionsProvider.notifier).getDetail(session.sessionId);
-      if (context.mounted) Navigator.pop(context);
-      if (!context.mounted) return;
-      await showModalBottomSheet<void>(
-        context: context,
-        isScrollControlled: true,
-        builder: (ctx) => _DetailSheet(detail: detail, session: session),
-      );
-    } catch (e) {
-      if (context.mounted) Navigator.pop(context);
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to load detail: $e')),
-        );
-      }
-    }
-  }
-}
-
-class _DetailSheet extends ConsumerWidget {
-  final SessionDetail detail;
-  final WalkSession session;
-  const _DetailSheet({required this.detail, required this.session});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    return DraggableScrollableSheet(
-      expand: false,
-      initialChildSize: 0.85,
-      builder: (_, controller) => ListView(
-        controller: controller,
-        padding: const EdgeInsets.all(16),
-        children: [
-          Text(session.title, style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 4),
-          Text(
-            '${detail.pointCount} points • ${detail.hexPolygons.length} hex cells • ${session.status}',
-          ),
-          const SizedBox(height: 12),
-          Row(
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF0F172A),
+      builder: (ctx) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.78,
+        builder: (_, controller) => Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: () async {
-                    try {
-                      final saved = await ref
-                          .read(sessionsProvider.notifier)
-                          .exportToDownloads(session.sessionId);
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Saved to $saved')),
-                        );
-                      }
-                    } catch (e) {
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Export failed: $e')),
-                        );
-                      }
-                    }
-                  },
-                  icon: const Icon(Icons.download),
-                  label: const Text('Export to Downloads'),
-                ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.copy),
+                    tooltip: 'Copy Raw GPX XML',
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: xml));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Copied GPX 1.1 XML to clipboard')),
+                      );
+                    },
+                  ),
+                ],
               ),
-              const SizedBox(width: 8),
+              Text(
+                'File: $path',
+                style: const TextStyle(fontSize: 11, color: Colors.white60),
+              ),
+              const Divider(height: 20),
               Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () {
-                    if (detail.gpxFilePath.isNotEmpty) {
-                      Share.shareXFiles([XFile(detail.gpxFilePath)], text: session.title);
-                    } else {
-                      Share.share(detail.gpxXml, subject: session.title);
-                    }
-                  },
-                  icon: const Icon(Icons.share),
-                  label: const Text('Share GPX'),
+                child: SingleChildScrollView(
+                  controller: controller,
+                  child: SelectableText(
+                    xml,
+                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                  ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 16),
-          Text('GPX 1.1 XML', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade100,
-              borderRadius: BorderRadius.circular(8),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Local GPX 1.1 Files & History'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _refresh,
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+            child: SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  await NativeTrackerBridge.generateDemoWalk();
+                  await _refresh();
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Generated Abbottabad Demo Walk GPX 1.1 file')),
+                  );
+                },
+                icon: const Icon(Icons.auto_fix_high),
+                label: const Text('Generate Abbottabad Demo Walk (.gpx Fixture)'),
+              ),
             ),
-            child: SelectableText(
-              detail.gpxXml.isEmpty ? '(no GPX content)' : detail.gpxXml,
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
-            ),
+          ),
+          Expanded(
+            child: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _sessions.isEmpty
+                    ? const Center(
+                        child: Text('No saved walks yet. Start a walk or generate a demo GPX.'),
+                      )
+                    : ListView.builder(
+                        padding: const EdgeInsets.all(12),
+                        itemCount: _sessions.length,
+                        itemBuilder: (ctx, idx) {
+                          final s = _sessions[idx];
+                          final sessionId = s['sessionId'] as String;
+                          final title = (s['title'] as String?) ?? 'Walk';
+                          final steps = (s['totalSteps'] as num?)?.toInt() ?? 0;
+                          final distM = (s['totalDistanceMeters'] as num?)?.toDouble() ?? 0.0;
+                          final gpxPath = (s['gpxFilePath'] as String?) ?? '';
+
+                          return Card(
+                            margin: const EdgeInsets.only(bottom: 12),
+                            child: Padding(
+                              padding: const EdgeInsets.all(14.0),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    title,
+                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    '$steps steps • ${(distM / 1000.0).toStringAsFixed(2)} km',
+                                    style: const TextStyle(color: Color(0xFF34D399)),
+                                  ),
+                                  if (gpxPath.isNotEmpty) ...[
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      gpxPath,
+                                      style: const TextStyle(fontSize: 11, color: Colors.white54),
+                                    ),
+                                  ],
+                                  const SizedBox(height: 10),
+                                  Wrap(
+                                    spacing: 8,
+                                    children: [
+                                      FilledButton.tonalIcon(
+                                        onPressed: () => _inspectGpx(sessionId, title),
+                                        icon: const Icon(Icons.code, size: 18),
+                                        label: const Text('Inspect GPX XML'),
+                                      ),
+                                      OutlinedButton.icon(
+                                        onPressed: () async {
+                                          final saved = await NativeTrackerBridge.exportToDownloads(sessionId);
+                                          if (!context.mounted) return;
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            SnackBar(content: Text('Saved to $saved')),
+                                          );
+                                        },
+                                        icon: const Icon(Icons.download, size: 18),
+                                        label: const Text('Save to Downloads'),
+                                      ),
+                                      if (gpxPath.isNotEmpty)
+                                        OutlinedButton.icon(
+                                          onPressed: () => Share.shareXFiles([XFile(gpxPath)]),
+                                          icon: const Icon(Icons.share, size: 18),
+                                          label: const Text('Share .gpx'),
+                                        ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
           ),
         ],
       ),

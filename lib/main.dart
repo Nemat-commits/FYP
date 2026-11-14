@@ -1,23 +1,46 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-
+import 'package:permission_handler/permission_handler.dart';
+import 'core/app_config.dart';
 import 'ui/home_shell.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  AppConfig.initializeMapbox();
   runApp(const ProviderScope(child: TerrastepApp()));
 }
 
-class TerrastepApp extends StatelessWidget {
+class TerrastepApp extends StatefulWidget {
   const TerrastepApp({super.key});
+
+  @override
+  State<TerrastepApp> createState() => _TerrastepAppState();
+}
+
+class _TerrastepAppState extends State<TerrastepApp> {
+  @override
+  void initState() {
+    super.initState();
+    _requestRequiredPermissions();
+  }
+
+  Future<void> _requestRequiredPermissions() async {
+    await [
+      Permission.locationWhenInUse,
+      Permission.activityRecognition,
+      Permission.notification,
+    ].request();
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Terrastep',
+      title: 'Terrastep 30% Milestone',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF10B981)),
+        colorSchemeSeed: const Color(0xFF059669),
+        brightness: Brightness.dark,
       ),
       home: const HomeShell(),
     );
