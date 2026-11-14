@@ -30,7 +30,23 @@ jobs:
         run: flutter pub get
 
       - name: Build debug APK
-        run: flutter build apk --debug
+        shell: bash
+        run: |
+          set +e
+          flutter build apk --debug > build-output.log 2>&1
+          result=$?
+          cat build-output.log
+          if [ "$result" -ne 0 ]; then
+            python3 - <<'PY'
+          from pathlib import Path
+          lines = Path('build-output.log').read_text(errors='replace').splitlines()
+          for line in lines[-100:]:
+              if line.strip():
+                  escaped = line.replace('%', '%25').replace('\r', '%0D')
+                  print(f'::error::{escaped}')
+          PY
+          fi
+          exit "$result"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
