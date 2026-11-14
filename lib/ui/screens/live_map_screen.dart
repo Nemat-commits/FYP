@@ -99,10 +99,10 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
     final map = _map;
     if (map == null) return;
     try {
-      await map.addSource(
+      await map.style.addSource(
         GeoJsonSource(id: _routeSourceId, data: _routeGeoJson(t)),
       );
-      await map.addLayer(
+      await map.style.addLayer(
         LineLayer(
           id: _routeLayerId,
           sourceId: _routeSourceId,
@@ -112,10 +112,10 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
           lineJoin: LineJoin.ROUND,
         ),
       );
-      await map.addSource(
+      await map.style.addSource(
         GeoJsonSource(id: _hexSourceId, data: _hexGeoJson(t)),
       );
-      await map.addLayer(
+      await map.style.addLayer(
         FillLayer(
           id: _hexFillId,
           sourceId: _hexSourceId,
@@ -123,7 +123,7 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
           fillOpacity: 0.25,
         ),
       );
-      await map.addLayer(
+      await map.style.addLayer(
         LineLayer(
           id: _hexOutlineId,
           sourceId: _hexSourceId,
@@ -142,8 +142,8 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
     final map = _map;
     if (map == null || !_styleReady) return;
     try {
-      await map.updateGeoJsonSource(id: _routeSourceId, data: _routeGeoJson(t));
-      await map.updateGeoJsonSource(id: _hexSourceId, data: _hexGeoJson(t));
+      await map.style.setStyleSourceProperty(_routeSourceId, 'data', _routeGeoJson(t));
+      await map.style.setStyleSourceProperty(_hexSourceId, 'data', _hexGeoJson(t));
     } catch (_) {}
     if (_follow) {
       try {
@@ -282,7 +282,7 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
             _NoTokenPlaceholder(onSetup: _showTokenDialog)
           else
             MapWidget(
-              mapOptions: MapOptions(styleUri: _styleUri),
+              styleUri: _styleUri,
               cameraOptions: CameraOptions(
                 center: Point(
                   coordinates: Position(telemetry.longitude, telemetry.latitude),
@@ -338,14 +338,15 @@ class _LiveMapScreenState extends ConsumerState<LiveMapScreen> {
                       _styleUri = uri;
                       _styleReady = false;
                     });
-                    _map?.setStyleUri(uri);
+                    _map?.loadStyleURI(uri);
                   },
                   itemBuilder: (ctx) => const [
                     PopupMenuItem(value: MapboxStyles.OUTDOORS, child: Text('Outdoors')),
                     PopupMenuItem(value: MapboxStyles.DARK, child: Text('Dark')),
                     PopupMenuItem(value: MapboxStyles.STANDARD, child: Text('Standard')),
                   ],
-                  child: const FloatingActionButton.small(
+                  child: FloatingActionButton.small(
+                    onPressed: null,
                     heroTag: 'style',
                     child: Icon(Icons.layers),
                   ),
