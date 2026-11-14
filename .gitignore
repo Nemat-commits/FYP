@@ -34,7 +34,7 @@ pubspec.lock
 # --- Generated GPX / telemetry (device-local, not source) ---
 *.gpx
 *.geojson
-gpx/
+/gpx/
 downloads/
 
 # --- Media / archives (Drive only) ---
