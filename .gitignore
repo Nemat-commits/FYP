@@ -4,6 +4,7 @@
 
 # --- Android build outputs (regenerable, 10s-100s of MB) ---
 *.apk
+!releases/*.apk
 *.aab
 *.ap_
 *.dex
