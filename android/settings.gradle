@@ -1,0 +1,30 @@
+pluginManagement {
+    def flutterSdkPath = {
+        def localProperties = new File(settingsDir, "local.properties")
+        if (localProperties.exists()) {
+            def props = new Properties()
+            props.load(new FileInputStream(localProperties))
+            return props.getProperty("flutter.sdk")
+        }
+        return null
+    }()
+    if (flutterSdkPath != null) {
+        includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
+    }
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = "terrastep"
+include(":app")
