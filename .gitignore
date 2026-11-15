@@ -1,0 +1,60 @@
+# Terrastep FYP — Git hygiene: code only, heavy artifacts live in Google Drive
+# Heavy binaries must NEVER enter Git (GitHub 100 MB hard limit, clone bloat).
+# APKs / AABs / videos / archives belong in Drive: TerraSteps - FYP / 04_Builds_&_Defense_Archive
+
+# --- Android build outputs (regenerable, 10s-100s of MB) ---
+*.apk
+!releases/*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+.gradle/
+build/
+**/build/
+captures/
+.externalNativeBuild/
+.cxx/
+local.properties
+*.iml
+.idea/
+.DS_Store
+
+# --- Flutter / Dart ---
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+pubspec.lock
+.pub-cache/
+.pub/
+*.log
+*.tmp
+
+# --- Generated GPX / telemetry (device-local, not source) ---
+*.gpx
+*.geojson
+/gpx/
+downloads/
+
+# --- Media / archives (Drive only) ---
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.zip
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+*.iso
+*.dmg
+
+# --- Secrets ---
+*.jks
+*.keystore
+key.properties
+google-services.json
+.env
+.env.*
+!.env.example
