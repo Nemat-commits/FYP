@@ -48,6 +48,7 @@ class WalkRecorderService : Service() {
     private var sequenceNumber: Int = 0
     private var totalDistanceMeters: Double = 0.0
     private var lastAcceptedLocation: Location? = null
+    private var distanceAnchorSteps = 0
     private var lastRawLocation: Location? = null
     private var gpsStatus = "WAITING"
     private var currentCadenceSpm: Double = 0.0
@@ -114,6 +115,7 @@ class WalkRecorderService : Service() {
         sequenceNumber = 0
         totalDistanceMeters = 0.0
         lastAcceptedLocation = null
+        distanceAnchorSteps = stepManager.getCurrentSessionSteps()
         visitedHexIds.clear()
         activePolylines.clear()
         activePolylines.add(mutableListOf())
@@ -157,6 +159,7 @@ class WalkRecorderService : Service() {
         status = "PAUSED"
         stepManager.pauseSession()
         lastAcceptedLocation = null
+        distanceAnchorSteps = stepManager.getCurrentSessionSteps()
         updateNotification(stepManager.getCurrentSessionSteps(), totalDistanceMeters)
         persistSessionCheckpoint()
         broadcastTelemetry()
@@ -169,6 +172,7 @@ class WalkRecorderService : Service() {
         segmentIndex += 1
         activePolylines.add(mutableListOf())
         lastAcceptedLocation = null
+        distanceAnchorSteps = stepManager.getCurrentSessionSteps()
         status = "RECORDING"
         stepManager.resumeSession()
         updateNotification(stepManager.getCurrentSessionSteps(), totalDistanceMeters)
@@ -253,17 +257,44 @@ class WalkRecorderService : Service() {
             return
         }
 
+        val steps = stepManager.getCurrentSessionSteps()
+        val hasStepHardware = stepManager.hasStepCounterHardware() || stepManager.hasStepDetectorHardware()
+        // Never draw a route or accumulate distance while the pedometer says stationary.
+        // Drop the old anchor after stopping so drift during rest cannot become a later leg.
+        if (hasStepHardware && !stepManager.hasRecentStepActivity()) {
+            lastAcceptedLocation = null
+            distanceAnchorSteps = steps
+            broadcastTelemetry()
+            return
+        }
         val prev = lastAcceptedLocation
         if (prev != null) {
             val distDelta = prev.distanceTo(loc).toDouble()
-            if (!GpsFixPolicy.acceptsMovement(distDelta, loc.elapsedRealtimeNanos - prev.elapsedRealtimeNanos)) {
+            val accuracy = maxOf(prev.accuracy, loc.accuracy).toDouble()
+            if (!GpsFixPolicy.acceptsWalking(
+                    distDelta, loc.elapsedRealtimeNanos - prev.elapsedRealtimeNanos,
+                    accuracy, hasStepHardware, steps - distanceAnchorSteps,
+                    if (loc.hasSpeed()) loc.speed.toDouble() else null,
+                    if (loc.hasSpeedAccuracy()) loc.speedAccuracyMetersPerSecond.toDouble() else null
+                )) {
+                // A large rejected discontinuity must not remain the anchor indefinitely.
+                if (distDelta > maxOf(10.0, accuracy * 2) &&
+                    (!hasStepHardware || distDelta > (steps - distanceAnchorSteps) * 1.8 + 1.2)) {
+                    lastAcceptedLocation = null
+                    distanceAnchorSteps = steps
+                }
                 broadcastTelemetry()
                 return
             }
             totalDistanceMeters += distDelta
+        } else if (activePolylines.lastOrNull()?.isNotEmpty() == true) {
+            // Resume after a stationary gap without a line across GPS drift.
+            segmentIndex += 1
+            activePolylines.add(mutableListOf())
         }
 
         lastAcceptedLocation = loc
+        distanceAnchorSteps = steps
         sequenceNumber += 1
         val hexId = HexGridEngine.latLonToHexId(loc.latitude, loc.longitude)
         visitedHexIds.add(hexId)

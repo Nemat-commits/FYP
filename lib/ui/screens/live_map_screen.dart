@@ -83,7 +83,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> with WidgetsBindingObserv
       if (!mounted) return false;
       setState(() => _locationMessage = enabled ? null : 'Turn on device location');
       await _mapboxMap?.location.updateSettings(LocationComponentSettings(
-        enabled: true, pulsingEnabled: true, showAccuracyRing: true,
+        enabled: false, // One native-fed blue dot, not a second Mapbox location feed.
       ));
       await NativeTrackerBridge.startLocationPreview();
       return enabled;
