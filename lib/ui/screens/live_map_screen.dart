@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
 import '../../core/app_config.dart';
 import '../../services/native_tracker_bridge.dart';
@@ -12,7 +13,10 @@ class LiveMapScreen extends StatefulWidget {
   State<LiveMapScreen> createState() => _LiveMapScreenState();
 }
 
-class _LiveMapScreenState extends State<LiveMapScreen> {
+class _LiveMapScreenState extends State<LiveMapScreen> with WidgetsBindingObserver {
+  String? _locationMessage;
+  bool _requestingLocation = false;
+  bool _busy = false;
   MapboxMap? _mapboxMap;
   StreamSubscription<Map<String, dynamic>>? _sub;
   Map<String, dynamic> _telemetry = {
@@ -38,6 +42,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _sub = NativeTrackerBridge.telemetryStream.listen((data) {
       if (!mounted) return;
       setState(() => _telemetry = data);
@@ -47,19 +52,64 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    NativeTrackerBridge.stopLocationPreview();
     _sub?.cancel();
     super.dispose();
   }
 
   Future<void> _onMapCreated(MapboxMap mapboxMap) async {
     _mapboxMap = mapboxMap;
-    await mapboxMap.location.updateSettings(
-      LocationComponentSettings(
-        enabled: true,
-        pulsingEnabled: true,
-        showAccuracyRing: true,
-      ),
-    );
+    await _enableLocation();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _enableLocation();
+    if (state == AppLifecycleState.paused) NativeTrackerBridge.stopLocationPreview();
+  }
+
+  Future<bool> _enableLocation() async {
+    if (_requestingLocation) return false;
+    _requestingLocation = true;
+    try {
+      final permission = await Permission.locationWhenInUse.request();
+      if (!mounted) return false;
+      if (!permission.isGranted) {
+        setState(() => _locationMessage = 'Enable precise location in Settings');
+        return false;
+      }
+      final enabled = await Permission.locationWhenInUse.serviceStatus.isEnabled;
+      if (!mounted) return false;
+      setState(() => _locationMessage = enabled ? null : 'Turn on device location');
+      await _mapboxMap?.location.updateSettings(LocationComponentSettings(
+        enabled: true, pulsingEnabled: true, showAccuracyRing: true,
+      ));
+      await NativeTrackerBridge.startLocationPreview();
+      return enabled;
+    } catch (e) {
+      if (mounted) setState(() => _locationMessage = 'Location unavailable — use follow to retry');
+      return false;
+    } finally {
+      _requestingLocation = false;
+    }
+  }
+
+  Future<void> _startWalk() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      if (!await _enableLocation()) return;
+      final permissions = await [Permission.activityRecognition, Permission.notification].request();
+      if (permissions[Permission.activityRecognition]?.isGranted != true) {
+        throw Exception('Allow physical activity permission to record steps.');
+      }
+      await NativeTrackerBridge.startWalk();
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   Future<void> _onStyleLoaded(StyleLoadedEventData event) async {
@@ -107,6 +157,14 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           lineJoin: LineJoin.ROUND,
         ),
       );
+      await map.style.addSource(GeoJsonSource(
+        id: 'current-position', data: jsonEncode({'type': 'FeatureCollection', 'features': []}),
+      ));
+      await map.style.addLayer(CircleLayer(
+        id: 'current-position-dot', sourceId: 'current-position',
+        circleRadius: 8, circleColor: 0xFF2563EB,
+        circleStrokeColor: 0xFFFFFFFF, circleStrokeWidth: 3,
+      ));
       _layersInitialized = true;
       await _updateMapLayersAndCamera(_telemetry);
     } catch (_) {}
@@ -166,7 +224,19 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
       await map.style.setStyleSourceProperty('hex-grid-source', 'data', jsonEncode(hexGeoJson));
     } catch (_) {}
 
-    if (_followUser) {
+    if (data['hasLocationFix'] == true) {
+      await map.style.setStyleSourceProperty('current-position', 'data', jsonEncode({
+        'type': 'FeatureCollection', 'features': [{
+          'type': 'Feature', 'properties': {},
+          'geometry': {'type': 'Point', 'coordinates': [data['longitude'], data['latitude']]},
+        }],
+      }));
+    } else {
+      await map.style.setStyleSourceProperty('current-position', 'data', jsonEncode({
+        'type': 'FeatureCollection', 'features': [],
+      }));
+    }
+    if (_followUser && data['hasLocationFix'] == true) {
       final lat = (data['latitude'] as num?)?.toDouble() ?? AppConfig.abbottabadLat;
       final lon = (data['longitude'] as num?)?.toDouble() ?? AppConfig.abbottabadLon;
       await map.flyTo(
@@ -207,7 +277,6 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     final movingMs = (_telemetry['movingDurationMs'] as num?)?.toInt() ?? 0;
     final cadence = (_telemetry['cadenceSpm'] as num?)?.toDouble() ?? 0.0;
     final accM = (_telemetry['accuracyMeters'] as num?)?.toDouble() ?? 0.0;
-    final hexId = (_telemetry['currentHexId'] as String?) ?? 'h3r9_0_0';
     final hexCount = (_telemetry['visitedHexCount'] as num?)?.toInt() ?? 0;
 
     return Scaffold(
@@ -251,13 +320,15 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                               const Icon(Icons.gps_fixed, color: Color(0xFF10B981), size: 18),
                               const SizedBox(width: 6),
                               Text(
-                                accM > 0 ? 'GPS ±${accM.toStringAsFixed(1)}m' : 'GPS Ready',
+                                _locationMessage ?? (_telemetry['hasLocationFix'] == true
+                                    ? (accM > 25 ? 'Weak GPS ±${accM.toStringAsFixed(0)}m' : 'GPS ±${accM.toStringAsFixed(1)}m')
+                                    : (_telemetry['gpsStatus'] == 'PERMISSION_REQUIRED' ? 'Enable precise location' : (_telemetry['gpsStatus'] == 'DISABLED' ? 'Turn on location' : 'Waiting for GPS'))),
                                 style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
                               ),
                             ],
                           ),
                           Text(
-                            'Hex: $hexId ($hexCount)',
+                            '$hexCount hexes',
                             style: const TextStyle(color: Color(0xFF34D399), fontSize: 12),
                           ),
                         ],
@@ -280,7 +351,10 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                   backgroundColor: _followUser ? const Color(0xFF059669) : const Color(0xDD0F172A),
                   onPressed: () {
                     setState(() => _followUser = !_followUser);
-                    if (_followUser) _updateMapLayersAndCamera(_telemetry);
+                    if (_followUser) {
+                      _enableLocation();
+                      _updateMapLayersAndCamera(_telemetry);
+                    }
                   },
                   child: Icon(_followUser ? Icons.my_location : Icons.location_searching),
                 ),
@@ -330,7 +404,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                       ),
                       _MetricTile(
                         label: 'DISTANCE',
-                        value: '${(distM / 1000.0).toStringAsFixed(2)} km',
+                        value: distM < 1000 ? '${distM.toStringAsFixed(0)} m' : '${(distM / 1000.0).toStringAsFixed(2)} km',
                         icon: Icons.straighten,
                       ),
                       _MetricTile(
@@ -355,7 +429,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                           backgroundColor: const Color(0xFF059669),
                           foregroundColor: Colors.white,
                         ),
-                        onPressed: () => NativeTrackerBridge.startWalk(),
+                        onPressed: _busy ? null : _startWalk,
                         icon: const Icon(Icons.play_arrow),
                         label: const Text(
                           'Start Walk (Step + GPS + GPX)',
@@ -393,6 +467,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                               ),
                               onPressed: () async {
                                 final res = await NativeTrackerBridge.finishWalk();
+                                await NativeTrackerBridge.startLocationPreview();
                                 if (!context.mounted) return;
                                 final path = res['gpxFilePath'] ?? '';
                                 ScaffoldMessenger.of(context).showSnackBar(

@@ -57,6 +57,13 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 val svc = WalkRecorderService.instance
                 when (call.method) {
+                    "startLocationPreview" -> {
+                        result.success(svc?.startLocationPreview() ?: emptyMap<String, Any?>())
+                    }
+                    "stopLocationPreview" -> {
+                        svc?.stopLocationPreview()
+                        result.success(null)
+                    }
                     "getDiagnostics" -> {
                         result.success(svc?.getDiagnostics() ?: emptyMap<String, Any?>())
                     }

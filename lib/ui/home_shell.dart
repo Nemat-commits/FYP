@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'screens/live_map_screen.dart';
 import 'screens/gpx_history_screen.dart';
-import 'screens/diagnostics_screen.dart';
+import 'screens/user_screen.dart';
 
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
@@ -13,18 +13,16 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   int _currentIndex = 0;
 
-  final List<Widget> _screens = const [
-    LiveMapScreen(),
-    GpxHistoryScreen(),
-    DiagnosticsScreen(),
-  ];
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: IndexedStack(
         index: _currentIndex,
-        children: _screens,
+        children: [
+          const LiveMapScreen(),
+          const GpxHistoryScreen(),
+          UserScreen(active: _currentIndex == 2),
+        ],
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,
@@ -41,9 +39,9 @@ class _HomeShellState extends State<HomeShell> {
             label: 'GPX & History',
           ),
           NavigationDestination(
-            icon: Icon(Icons.sensors_outlined),
-            selectedIcon: Icon(Icons.sensors),
-            label: '30% Check',
+            icon: Icon(Icons.person_outline),
+            selectedIcon: Icon(Icons.person),
+            label: 'User',
           ),
         ],
       ),

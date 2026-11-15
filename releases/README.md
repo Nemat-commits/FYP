@@ -32,3 +32,24 @@ with `--dart-define=MAPBOX_ACCESS_TOKEN=pk.xxx`.
 CI analysis/build success does not verify token validity, GPS quality or sensor
 behaviour on a physical phone. The hex overlay uses the blueprint's local Kotlin
 hex approximation, not canonical globally indexed H3 cells.
+
+## GPS / User update (0.3.1)
+
+- Location startup waits for runtime permission and retries when the app resumes.
+- Fused location updates are backed by device GPS/network updates; stale fixes and
+  duplicate timestamps are rejected. Recording retains the 25m accuracy gate,
+  walking-speed gate and jitter filter. Distance below 1km is displayed in metres.
+- The live map includes an explicit blue position marker and no longer follows
+  placeholder coordinates as if they were a real fix. GPS waiting/disabled/weak
+  states replace the misleading GPS Ready label.
+- User replaces 30% Check: locally editable name plus saved-path overview and
+  total recorded distance. Demo walks do not contribute. Open the tab again or
+  pull to refresh after saving a walk. Unfinished walks are not counted.
+- CI includes profile widget tests and native GPS acceptance-policy unit tests.
+
+On a phone: allow precise location and physical activity, turn device location
+on, test outdoors, and wait for GPS accuracy <=25m before expecting route distance.
+Confirm the blue marker follows you, walk 50–100m, pause/resume, finish and inspect
+both GPX history and User. Deny permission and disable location in separate tests
+and confirm a truthful message rather than a fake position. CI cannot validate
+physical GPS reception or phone power-management behaviour.

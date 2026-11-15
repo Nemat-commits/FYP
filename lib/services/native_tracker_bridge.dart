@@ -7,6 +7,14 @@ class NativeTrackerBridge {
   static Stream<Map<String, dynamic>> get telemetryStream =>
       _telemetry.receiveBroadcastStream().map((event) => Map<String, dynamic>.from(event as Map));
 
+  static Future<void> startLocationPreview() async {
+    await _methods.invokeMethod('startLocationPreview');
+  }
+
+  static Future<void> stopLocationPreview() async {
+    await _methods.invokeMethod('stopLocationPreview');
+  }
+
   static Future<Map<String, dynamic>> getDiagnostics() async {
     final res = await _methods.invokeMethod('getDiagnostics');
     return Map<String, dynamic>.from(res as Map);
