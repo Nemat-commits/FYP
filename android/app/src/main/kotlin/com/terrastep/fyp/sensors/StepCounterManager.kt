@@ -24,6 +24,7 @@ class StepCounterManager(
     private var accumulatedStepsBeforePause: Int = 0
     private var currentSessionSteps: Int = 0
     private var lastRawSensorValue: Long = 0L
+    private var lastStepActivityMs: Long? = null
 
     // Rolling 60-second step timestamps (monotonic ms) for live cadence calculation
     private val recentStepTimestampsMs = ArrayDeque<Long>()
@@ -33,6 +34,9 @@ class StepCounterManager(
     fun getLastRawBootSteps(): Long = lastRawSensorValue
     fun getInitialBaseline(): Long? = initialBootBaseline
     fun getCurrentSessionSteps(): Int = currentSessionSteps
+    fun hasRecentStepActivity(): Boolean = lastStepActivityMs?.let {
+        SystemClock.elapsedRealtime() - it in 0..6000
+    } ?: false
 
     fun startSession() {
         accumulatedStepsBeforePause = 0
@@ -40,6 +44,7 @@ class StepCounterManager(
         initialBootBaseline = null
         currentSegmentBaseline = null
         recentStepTimestampsMs.clear()
+        lastStepActivityMs = null
         isRecording = true
         isPaused = false
         registerSensors()
@@ -50,6 +55,7 @@ class StepCounterManager(
         accumulatedStepsBeforePause = currentSessionSteps
         currentSegmentBaseline = null
         isPaused = true
+        lastStepActivityMs = null
     }
 
     fun resumeSession() {
@@ -95,6 +101,7 @@ class StepCounterManager(
                 currentSessionSteps = accumulatedStepsBeforePause + delta
 
                 val addedSteps = (currentSessionSteps - previousSteps).coerceAtLeast(0)
+                if (addedSteps > 0) lastStepActivityMs = nowElapsedMs
                 repeat(addedSteps.coerceAtMost(20)) {
                     recentStepTimestampsMs.addLast(nowElapsedMs)
                 }
@@ -104,6 +111,7 @@ class StepCounterManager(
 
             Sensor.TYPE_STEP_DETECTOR -> {
                 if (isPaused) return
+                if (event.values.isNotEmpty() && event.values[0] == 1.0f) lastStepActivityMs = nowElapsedMs
                 // Fallback only if hardware TYPE_STEP_COUNTER is missing on the device
                 if (stepCounterSensor == null && event.values.isNotEmpty() && event.values[0] == 1.0f) {
                     currentSessionSteps += 1

@@ -13,6 +13,7 @@ import com.terrastep.fyp.db.TrackPointEntity
 import com.terrastep.fyp.db.WalkSessionEntity
 import com.terrastep.fyp.geo.HexGridEngine
 import com.terrastep.fyp.gpx.GpxFileWriter
+import com.terrastep.fyp.sensors.GpsFixPolicy
 import com.terrastep.fyp.sensors.LocationTrackerManager
 import com.terrastep.fyp.sensors.StepCounterManager
 import kotlinx.coroutines.*
@@ -47,7 +48,9 @@ class WalkRecorderService : Service() {
     private var sequenceNumber: Int = 0
     private var totalDistanceMeters: Double = 0.0
     private var lastAcceptedLocation: Location? = null
+    private var distanceAnchorSteps = 0
     private var lastRawLocation: Location? = null
+    private var gpsStatus = "WAITING"
     private var currentCadenceSpm: Double = 0.0
     private val visitedHexIds = LinkedHashSet<String>()
     private val activePolylines = mutableListOf<MutableList<List<Double>>>()
@@ -66,9 +69,21 @@ class WalkRecorderService : Service() {
             broadcastTelemetry()
         }
 
-        locationManager = LocationTrackerManager(this) { loc ->
+        locationManager = LocationTrackerManager(this, { state ->
+            gpsStatus = state
+            broadcastTelemetry()
+        }) { loc ->
             handleIncomingLocation(loc)
         }
+    }
+
+    fun startLocationPreview(): Map<String, Any?> {
+        locationManager.startTracking()
+        return buildTelemetryPayload()
+    }
+
+    fun stopLocationPreview() {
+        if (status == "IDLE") locationManager.stopTracking()
     }
 
     fun getDiagnostics(): Map<String, Any?> {
@@ -100,6 +115,7 @@ class WalkRecorderService : Service() {
         sequenceNumber = 0
         totalDistanceMeters = 0.0
         lastAcceptedLocation = null
+        distanceAnchorSteps = stepManager.getCurrentSessionSteps()
         visitedHexIds.clear()
         activePolylines.clear()
         activePolylines.add(mutableListOf())
@@ -143,6 +159,7 @@ class WalkRecorderService : Service() {
         status = "PAUSED"
         stepManager.pauseSession()
         lastAcceptedLocation = null
+        distanceAnchorSteps = stepManager.getCurrentSessionSteps()
         updateNotification(stepManager.getCurrentSessionSteps(), totalDistanceMeters)
         persistSessionCheckpoint()
         broadcastTelemetry()
@@ -155,6 +172,7 @@ class WalkRecorderService : Service() {
         segmentIndex += 1
         activePolylines.add(mutableListOf())
         lastAcceptedLocation = null
+        distanceAnchorSteps = stepManager.getCurrentSessionSteps()
         status = "RECORDING"
         stepManager.resumeSession()
         updateNotification(stepManager.getCurrentSessionSteps(), totalDistanceMeters)
@@ -217,7 +235,16 @@ class WalkRecorderService : Service() {
     }
 
     private fun handleIncomingLocation(loc: Location) {
+        // Ignore stale/out-of-order fixes (including duplicates from the two providers).
+        val ageMs = (SystemClock.elapsedRealtimeNanos() - loc.elapsedRealtimeNanos) / 1_000_000
+        if (!GpsFixPolicy.isFresh(ageMs)) return
+        if (lastRawLocation != null && loc.elapsedRealtimeNanos <= lastRawLocation!!.elapsedRealtimeNanos) return
+        val previousRaw = lastRawLocation
+        if (previousRaw != null && previousRaw.hasAccuracy() && previousRaw.accuracy <= 25f &&
+            (!loc.hasAccuracy() || loc.accuracy > 25f) &&
+            (SystemClock.elapsedRealtimeNanos() - previousRaw.elapsedRealtimeNanos) / 1_000_000 < 15000) return
         lastRawLocation = loc
+        gpsStatus = if (!loc.hasAccuracy() || loc.accuracy > 25f) "POOR_ACCURACY" else "FIX"
         if (status != "RECORDING") {
             broadcastTelemetry()
             return
@@ -225,27 +252,49 @@ class WalkRecorderService : Service() {
         val sessionId = currentSessionId ?: return
 
         // Accuracy filter: ignore fixes worse than 25m
-        if (loc.hasAccuracy() && loc.accuracy > 25.0f) {
+        if (!loc.hasAccuracy() || loc.accuracy > 25.0f) {
             broadcastTelemetry()
             return
         }
 
+        val steps = stepManager.getCurrentSessionSteps()
+        val hasStepHardware = stepManager.hasStepCounterHardware() || stepManager.hasStepDetectorHardware()
+        // Never draw a route or accumulate distance while the pedometer says stationary.
+        // Drop the old anchor after stopping so drift during rest cannot become a later leg.
+        if (hasStepHardware && !stepManager.hasRecentStepActivity()) {
+            lastAcceptedLocation = null
+            distanceAnchorSteps = steps
+            broadcastTelemetry()
+            return
+        }
         val prev = lastAcceptedLocation
         if (prev != null) {
             val distDelta = prev.distanceTo(loc).toDouble()
-            val timeDeltaSec = ((loc.elapsedRealtimeNanos - prev.elapsedRealtimeNanos) / 1_000_000_000.0).coerceAtLeast(0.5)
-            val speedMps = distDelta / timeDeltaSec
-
-            // Reject teleports > 6.5 m/s or stationary jitter < 1.2m when first point already exists
-            if (speedMps > 6.5) return
-            if (distDelta < 1.2) {
+            val accuracy = maxOf(prev.accuracy, loc.accuracy).toDouble()
+            if (!GpsFixPolicy.acceptsWalking(
+                    distDelta, loc.elapsedRealtimeNanos - prev.elapsedRealtimeNanos,
+                    accuracy, hasStepHardware, steps - distanceAnchorSteps,
+                    if (loc.hasSpeed()) loc.speed.toDouble() else null,
+                    if (loc.hasSpeedAccuracy()) loc.speedAccuracyMetersPerSecond.toDouble() else null
+                )) {
+                // A large rejected discontinuity must not remain the anchor indefinitely.
+                if (distDelta > maxOf(10.0, accuracy * 2) &&
+                    (!hasStepHardware || distDelta > (steps - distanceAnchorSteps) * 1.8 + 1.2)) {
+                    lastAcceptedLocation = null
+                    distanceAnchorSteps = steps
+                }
                 broadcastTelemetry()
                 return
             }
             totalDistanceMeters += distDelta
+        } else if (activePolylines.lastOrNull()?.isNotEmpty() == true) {
+            // Resume after a stationary gap without a line across GPS drift.
+            segmentIndex += 1
+            activePolylines.add(mutableListOf())
         }
 
         lastAcceptedLocation = loc
+        distanceAnchorSteps = steps
         sequenceNumber += 1
         val hexId = HexGridEngine.latLonToHexId(loc.latitude, loc.longitude)
         visitedHexIds.add(hexId)
@@ -333,7 +382,9 @@ class WalkRecorderService : Service() {
             else -> 0L
         }
         val elapsedMs = if (status == "IDLE") 0L else (nowElapsed - startElapsedRealtimeMs).coerceAtLeast(0L)
-        val loc = lastAcceptedLocation ?: lastRawLocation
+        val loc = lastRawLocation
+        val fixAgeMs = loc?.let { (SystemClock.elapsedRealtimeNanos() - it.elapsedRealtimeNanos) / 1_000_000 }
+        val hasFix = loc != null && fixAgeMs != null && fixAgeMs in 0..15000
         val currentHex = if (loc != null) HexGridEngine.latLonToHexId(loc.latitude, loc.longitude) else "h3r9_0_0"
 
         val hexPolygons = visitedHexIds.map { hexId ->
@@ -354,6 +405,8 @@ class WalkRecorderService : Service() {
             "distanceMeters" to totalDistanceMeters,
             "latitude" to (loc?.latitude ?: 34.1688),
             "longitude" to (loc?.longitude ?: 73.2215),
+            "hasLocationFix" to hasFix,
+            "gpsStatus" to (if (!hasFix && gpsStatus == "FIX") "WAITING" else gpsStatus),
             "accuracyMeters" to (loc?.accuracy?.toDouble() ?: 0.0),
             "currentHexId" to currentHex,
             "visitedHexCount" to visitedHexIds.size,

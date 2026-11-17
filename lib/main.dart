@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'core/app_config.dart';
 import 'ui/home_shell.dart';
 
@@ -18,20 +17,6 @@ class TerrastepApp extends StatefulWidget {
 }
 
 class _TerrastepAppState extends State<TerrastepApp> {
-  @override
-  void initState() {
-    super.initState();
-    _requestRequiredPermissions();
-  }
-
-  Future<void> _requestRequiredPermissions() async {
-    await [
-      Permission.locationWhenInUse,
-      Permission.activityRecognition,
-      Permission.notification,
-    ].request();
-  }
-
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
