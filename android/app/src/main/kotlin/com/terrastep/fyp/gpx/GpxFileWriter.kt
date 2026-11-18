@@ -19,6 +19,7 @@ object GpxFileWriter {
     }
     private val fileTimestampFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
 
+    @Synchronized
     fun writeSessionGpx(
         context: Context,
         session: WalkSessionEntity,
@@ -110,11 +111,10 @@ object GpxFileWriter {
                     serializer.text(isoFormat.format(Date(pt.timestampUtcMs)))
                     serializer.endTag(null, "time")
 
-                    serializer.startTag(null, "hdop")
-                    serializer.text(String.format(Locale.US, "%.1f", pt.horizontalAccuracyMeters))
-                    serializer.endTag(null, "hdop")
-
                     serializer.startTag(null, "extensions")
+                    serializer.startTag(null, "terrastep:accuracy_m")
+                    serializer.text(String.format(Locale.US, "%.1f", pt.horizontalAccuracyMeters))
+                    serializer.endTag(null, "terrastep:accuracy_m")
                     serializer.startTag(null, "terrastep:steps")
                     serializer.text(pt.cumulativeSessionSteps.toString())
                     serializer.endTag(null, "terrastep:steps")
@@ -123,9 +123,6 @@ object GpxFileWriter {
                     serializer.text(String.format(Locale.US, "%.2f", pt.speedMetersPerSec))
                     serializer.endTag(null, "terrastep:speed_mps")
 
-                    serializer.startTag(null, "terrastep:h3_res9")
-                    serializer.text(pt.hexCellId)
-                    serializer.endTag(null, "terrastep:h3_res9")
                     serializer.endTag(null, "extensions")
 
                     serializer.endTag(null, "trkpt")

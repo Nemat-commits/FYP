@@ -16,6 +16,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check milestone scope
+        run: python3 scripts/check_milestone_scope.py
+
       - name: Verify Mapbox build configuration
         env:
           MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}

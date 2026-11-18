@@ -16,10 +16,9 @@ void main() {
         {'sessionId': 'real', 'title': 'Walk', 'status': 'COMPLETED', 'totalDistanceMeters': 1250.0},
         {'sessionId': 'demo', 'title': 'Abbottabad Pilot Trail (Demo)', 'status': 'COMPLETED', 'totalDistanceMeters': 9999.0},
       ];
-      if (call.method == 'getSessionDetail') return {'points': [
-        {'lon': 73.2215, 'lat': 34.1688, 'segmentIndex': 0},
-        {'lon': 73.2225, 'lat': 34.1698, 'segmentIndex': 0},
-      ]};
+      if (call.method == 'getSessionDetail') {
+        fail('User must not load or render individual route points');
+      }
       return null;
     });
   });
@@ -28,7 +27,7 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, null);
   });
 
-  testWidgets('shows name and saved path distance without counting demo walks', (tester) async {
+  testWidgets('shows only name and kilometre total without loading route points', (tester) async {
     await tester.pumpWidget(const MaterialApp(home: UserScreen(active: true)));
     await tester.pumpAndSettle();
     expect(find.text('Nemat'), findsOneWidget);

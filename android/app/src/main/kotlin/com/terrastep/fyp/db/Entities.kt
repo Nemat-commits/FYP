@@ -15,7 +15,7 @@ data class WalkSessionEntity(
     val totalSteps: Int,
     val baselineStepsAtStart: Long?,
     val totalDistanceMeters: Double,
-    val visitedHexIdsJson: String,
+    val visitedHexIdsJson: String, // Inert legacy column; kept to preserve existing Room v1 data.
     val gpxFilePath: String?,
     val status: String // RECORDING, PAUSED, COMPLETED
 )
@@ -37,5 +37,5 @@ data class TrackPointEntity(
     val timestampUtcMs: Long,
     val elapsedRealtimeMs: Long,
     val cumulativeSessionSteps: Int,
-    val hexCellId: String
+    val hexCellId: String // Inert legacy column; new points store an empty string.
 )

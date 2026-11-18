@@ -11,13 +11,11 @@ import com.terrastep.fyp.MainActivity
 import com.terrastep.fyp.db.TerrastepDatabase
 import com.terrastep.fyp.db.TrackPointEntity
 import com.terrastep.fyp.db.WalkSessionEntity
-import com.terrastep.fyp.geo.HexGridEngine
 import com.terrastep.fyp.gpx.GpxFileWriter
 import com.terrastep.fyp.sensors.GpsFixPolicy
 import com.terrastep.fyp.sensors.LocationTrackerManager
 import com.terrastep.fyp.sensors.StepCounterManager
 import kotlinx.coroutines.*
-import org.json.JSONArray
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -52,7 +50,6 @@ class WalkRecorderService : Service() {
     private var lastRawLocation: Location? = null
     private var gpsStatus = "WAITING"
     private var currentCadenceSpm: Double = 0.0
-    private val visitedHexIds = LinkedHashSet<String>()
     private val activePolylines = mutableListOf<MutableList<List<Double>>>()
 
     private var tickerJob: Job? = null
@@ -116,7 +113,6 @@ class WalkRecorderService : Service() {
         totalDistanceMeters = 0.0
         lastAcceptedLocation = null
         distanceAnchorSteps = stepManager.getCurrentSessionSteps()
-        visitedHexIds.clear()
         activePolylines.clear()
         activePolylines.add(mutableListOf())
 
@@ -198,7 +194,6 @@ class WalkRecorderService : Service() {
 
         val result = withContext(Dispatchers.IO) {
             val points = db.walkDao().getTrackPointsForSession(sessionId)
-            val hexJson = JSONArray(visitedHexIds.toList()).toString()
             val completedEntity = WalkSessionEntity(
                 sessionId = sessionId,
                 title = sessionTitle,
@@ -209,7 +204,7 @@ class WalkRecorderService : Service() {
                 totalSteps = finalSteps,
                 baselineStepsAtStart = stepManager.getInitialBaseline(),
                 totalDistanceMeters = totalDistanceMeters,
-                visitedHexIdsJson = hexJson,
+                visitedHexIdsJson = "[]",
                 gpxFilePath = null,
                 status = "COMPLETED"
             )
@@ -223,8 +218,7 @@ class WalkRecorderService : Service() {
                 "totalDistanceMeters" to finalEntity.totalDistanceMeters,
                 "movingDurationMs" to finalEntity.movingDurationMs,
                 "gpxFilePath" to gpxFile.absolutePath,
-                "pointCount" to points.size,
-                "hexCount" to visitedHexIds.size
+                "pointCount" to points.size
             )
         }
 
@@ -296,8 +290,6 @@ class WalkRecorderService : Service() {
         lastAcceptedLocation = loc
         distanceAnchorSteps = steps
         sequenceNumber += 1
-        val hexId = HexGridEngine.latLonToHexId(loc.latitude, loc.longitude)
-        visitedHexIds.add(hexId)
 
         if (activePolylines.isEmpty()) {
             activePolylines.add(mutableListOf())
@@ -316,7 +308,7 @@ class WalkRecorderService : Service() {
             timestampUtcMs = System.currentTimeMillis(),
             elapsedRealtimeMs = SystemClock.elapsedRealtime(),
             cumulativeSessionSteps = stepManager.getCurrentSessionSteps(),
-            hexCellId = hexId
+            hexCellId = ""
         )
 
         serviceScope.launch {
@@ -335,7 +327,6 @@ class WalkRecorderService : Service() {
             accumulatedMovingMsBeforePause
         }
         val elapsedMs = (nowElapsed - startElapsedRealtimeMs).coerceAtLeast(0L)
-        val hexJson = JSONArray(visitedHexIds.toList()).toString()
 
         serviceScope.launch {
             db.walkDao().upsertSession(
@@ -349,7 +340,7 @@ class WalkRecorderService : Service() {
                     totalSteps = stepManager.getCurrentSessionSteps(),
                     baselineStepsAtStart = stepManager.getInitialBaseline(),
                     totalDistanceMeters = totalDistanceMeters,
-                    visitedHexIdsJson = hexJson,
+                    visitedHexIdsJson = "[]",
                     gpxFilePath = null,
                     status = status
                 )
@@ -385,15 +376,6 @@ class WalkRecorderService : Service() {
         val loc = lastRawLocation
         val fixAgeMs = loc?.let { (SystemClock.elapsedRealtimeNanos() - it.elapsedRealtimeNanos) / 1_000_000 }
         val hasFix = loc != null && fixAgeMs != null && fixAgeMs in 0..15000
-        val currentHex = if (loc != null) HexGridEngine.latLonToHexId(loc.latitude, loc.longitude) else "h3r9_0_0"
-
-        val hexPolygons = visitedHexIds.map { hexId ->
-            mapOf(
-                "hexId" to hexId,
-                "ring" to HexGridEngine.hexIdToBoundaryLatLon(hexId).map { listOf(it.second, it.first) }
-            )
-        }
-
         return mapOf(
             "sessionId" to currentSessionId,
             "status" to status,
@@ -408,10 +390,7 @@ class WalkRecorderService : Service() {
             "hasLocationFix" to hasFix,
             "gpsStatus" to (if (!hasFix && gpsStatus == "FIX") "WAITING" else gpsStatus),
             "accuracyMeters" to (loc?.accuracy?.toDouble() ?: 0.0),
-            "currentHexId" to currentHex,
-            "visitedHexCount" to visitedHexIds.size,
             "polylines" to activePolylines,
-            "hexPolygons" to hexPolygons,
             "hasStepSensor" to (stepManager.hasStepCounterHardware() || stepManager.hasStepDetectorHardware())
         )
     }
