@@ -1,7 +1,7 @@
 name: terrastep
 description: Terrastep FYP 30% Milestone - Step Counter, Mapbox API, and Local GPX 1.1 Builder.
 publish_to: 'none'
-version: 0.3.2+32
+version: 0.3.3+33
 
 environment:
   sdk: '>=3.3.0 <4.0.0'

@@ -28,10 +28,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> with WidgetsBindingObserv
     'latitude': AppConfig.abbottabadLat,
     'longitude': AppConfig.abbottabadLon,
     'accuracyMeters': 0.0,
-    'currentHexId': 'h3r9_0_0',
-    'visitedHexCount': 0,
     'polylines': [],
-    'hexPolygons': [],
   };
 
   bool _followUser = true;
@@ -120,29 +117,6 @@ class _LiveMapScreenState extends State<LiveMapScreen> with WidgetsBindingObserv
     try {
       await map.style.addSource(
         GeoJsonSource(
-          id: 'hex-grid-source',
-          data: jsonEncode({'type': 'FeatureCollection', 'features': []}),
-        ),
-      );
-      await map.style.addLayer(
-        FillLayer(
-          id: 'hex-grid-fill',
-          sourceId: 'hex-grid-source',
-          fillColor: 0xFF10B981,
-          fillOpacity: 0.28,
-        ),
-      );
-      await map.style.addLayer(
-        LineLayer(
-          id: 'hex-grid-outline',
-          sourceId: 'hex-grid-source',
-          lineColor: 0xFF047857,
-          lineWidth: 2.0,
-        ),
-      );
-
-      await map.style.addSource(
-        GeoJsonSource(
           id: 'walk-route-source',
           data: jsonEncode({'type': 'FeatureCollection', 'features': []}),
         ),
@@ -197,31 +171,9 @@ class _LiveMapScreenState extends State<LiveMapScreen> with WidgetsBindingObserv
       ],
     };
 
-    final rawHexes = (data['hexPolygons'] as List?) ?? [];
-    final hexFeatures = rawHexes.map((h) {
-      final hMap = Map<String, dynamic>.from(h as Map);
-      final ring = (hMap['ring'] as List)
-          .map((pt) => [(pt as List)[0] as num, pt[1] as num])
-          .toList();
-      return {
-        'type': 'Feature',
-        'geometry': {
-          'type': 'Polygon',
-          'coordinates': [ring],
-        },
-        'properties': {'hexId': hMap['hexId']},
-      };
-    }).toList();
-
-    final hexGeoJson = {
-      'type': 'FeatureCollection',
-      'features': hexFeatures,
-    };
-
     try {
       await map.style.setStyleSourceProperty('walk-route-source', 'data', jsonEncode(routeGeoJson));
 
-      await map.style.setStyleSourceProperty('hex-grid-source', 'data', jsonEncode(hexGeoJson));
     } catch (_) {}
 
     if (data['hasLocationFix'] == true) {
@@ -277,7 +229,6 @@ class _LiveMapScreenState extends State<LiveMapScreen> with WidgetsBindingObserv
     final movingMs = (_telemetry['movingDurationMs'] as num?)?.toInt() ?? 0;
     final cadence = (_telemetry['cadenceSpm'] as num?)?.toDouble() ?? 0.0;
     final accM = (_telemetry['accuracyMeters'] as num?)?.toDouble() ?? 0.0;
-    final hexCount = (_telemetry['visitedHexCount'] as num?)?.toInt() ?? 0;
 
     return Scaffold(
       body: Stack(
@@ -326,10 +277,6 @@ class _LiveMapScreenState extends State<LiveMapScreen> with WidgetsBindingObserv
                                 style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
                               ),
                             ],
-                          ),
-                          Text(
-                            '$hexCount hexes',
-                            style: const TextStyle(color: Color(0xFF34D399), fontSize: 12),
                           ),
                         ],
                       ),

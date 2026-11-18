@@ -5,9 +5,6 @@ import android.os.Build
 import android.os.Bundle
 import androidx.lifecycle.lifecycleScope
 import com.terrastep.fyp.db.TerrastepDatabase
-import com.terrastep.fyp.db.TrackPointEntity
-import com.terrastep.fyp.db.WalkSessionEntity
-import com.terrastep.fyp.geo.HexGridEngine
 import com.terrastep.fyp.gpx.GpxFileWriter
 import com.terrastep.fyp.service.WalkRecorderService
 import io.flutter.embedding.android.FlutterActivity
@@ -17,12 +14,7 @@ import io.flutter.plugin.common.MethodChannel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.*
-import kotlin.math.cos
-import kotlin.math.sin
 
 class MainActivity : FlutterActivity() {
     private val METHOD_CHANNEL = "com.terrastep.fyp/methods"
@@ -86,7 +78,9 @@ class MainActivity : FlutterActivity() {
                         lifecycleScope.launch {
                             val list = withContext(Dispatchers.IO) {
                                 val db = TerrastepDatabase.getInstance(this@MainActivity)
-                                db.walkDao().getAllSessions().map { s ->
+                                db.walkDao().getAllSessions()
+                                    .filterNot { it.title.startsWith("Abbottabad Pilot Trail") }
+                                    .map { s ->
                                     mapOf(
                                         "sessionId" to s.sessionId,
                                         "title" to s.title,
@@ -96,7 +90,6 @@ class MainActivity : FlutterActivity() {
                                         "movingDurationMs" to s.movingDurationMs,
                                         "totalSteps" to s.totalSteps,
                                         "totalDistanceMeters" to s.totalDistanceMeters,
-                                        "visitedHexIdsJson" to s.visitedHexIdsJson,
                                         "gpxFilePath" to s.gpxFilePath,
                                         "status" to s.status
                                     )
@@ -120,18 +113,6 @@ class MainActivity : FlutterActivity() {
                                     generated.readText()
                                 } else ""
 
-                                val hexList = mutableListOf<String>()
-                                session?.visitedHexIdsJson?.let { json ->
-                                    val arr = JSONArray(json)
-                                    for (i in 0 until arr.length()) hexList.add(arr.getString(i))
-                                }
-                                val hexPolygons = hexList.map { hId ->
-                                    mapOf(
-                                        "hexId" to hId,
-                                        "ring" to HexGridEngine.hexIdToBoundaryLatLon(hId).map { listOf(it.second, it.first) }
-                                    )
-                                }
-
                                 mapOf(
                                     "sessionId" to sessionId,
                                     "gpxXml" to gpxContent,
@@ -143,11 +124,9 @@ class MainActivity : FlutterActivity() {
                                             "lon" to pt.longitude,
                                             "ele" to pt.altitudeMeters,
                                             "steps" to pt.cumulativeSessionSteps,
-                                            "segmentIndex" to pt.segmentIndex,
-                                            "hexId" to pt.hexCellId
+                                            "segmentIndex" to pt.segmentIndex
                                         )
-                                    },
-                                    "hexPolygons" to hexPolygons
+                                    }
                                 )
                             }
                             result.success(detail)
@@ -172,83 +151,9 @@ class MainActivity : FlutterActivity() {
                             }
                         }
                     }
-                    "generateDemoWalk" -> {
-                        lifecycleScope.launch {
-                            val summary = withContext(Dispatchers.IO) {
-                                createDemoAbbottabadWalk()
-                            }
-                            result.success(summary)
-                        }
-                    }
                     else -> result.notImplemented()
                 }
             }
     }
 
-    private suspend fun createDemoAbbottabadWalk(): Map<String, Any?> {
-        val db = TerrastepDatabase.getInstance(this)
-        val sessionId = UUID.randomUUID().toString()
-        val now = System.currentTimeMillis()
-        val startMs = now - 15 * 60 * 1000L
-        val points = mutableListOf<TrackPointEntity>()
-        val hexes = LinkedHashSet<String>()
-
-        var lat = 34.1688
-        var lon = 73.2215
-        var steps = 0
-        var dist = 0.0
-
-        for (i in 0 until 60) {
-            val angle = i * 0.08
-            val dLat = 0.00014 * cos(angle)
-            val dLon = 0.00018 * sin(angle)
-            lat += dLat
-            lon += dLon
-            steps += 11
-            dist += 18.5
-            val hexId = HexGridEngine.latLonToHexId(lat, lon)
-            hexes.add(hexId)
-            points.add(
-                TrackPointEntity(
-                    sessionId = sessionId,
-                    segmentIndex = if (i < 30) 0 else 1,
-                    sequenceNumber = i + 1,
-                    latitude = lat,
-                    longitude = lon,
-                    altitudeMeters = 1256.0 + (i * 0.2),
-                    horizontalAccuracyMeters = 4.2f,
-                    speedMetersPerSec = 1.35f,
-                    timestampUtcMs = startMs + (i * 15_000L),
-                    elapsedRealtimeMs = i * 15_000L,
-                    cumulativeSessionSteps = steps,
-                    hexCellId = hexId
-                )
-            )
-        }
-
-        val fmt = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.US)
-        val entity = WalkSessionEntity(
-            sessionId = sessionId,
-            title = "Abbottabad Pilot Trail (${fmt.format(Date(startMs))})",
-            startTimeUtcMs = startMs,
-            endTimeUtcMs = now,
-            elapsedDurationMs = 15 * 60 * 1000L,
-            movingDurationMs = 14 * 60 * 1000L,
-            totalSteps = steps,
-            baselineStepsAtStart = 10420L,
-            totalDistanceMeters = dist,
-            visitedHexIdsJson = JSONArray(hexes.toList()).toString(),
-            gpxFilePath = null,
-            status = "COMPLETED"
-        )
-        db.walkDao().upsertSession(entity)
-        for (pt in points) db.walkDao().insertTrackPoint(pt)
-        val gpxFile = GpxFileWriter.writeSessionGpx(this, entity, points)
-        val updated = entity.copy(gpxFilePath = gpxFile.absolutePath)
-        db.walkDao().upsertSession(updated)
-        return mapOf(
-            "sessionId" to sessionId,
-            "gpxFilePath" to gpxFile.absolutePath
-        )
-    }
 }

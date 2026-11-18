@@ -104,30 +104,12 @@ class _GpxHistoryScreenState extends State<GpxHistoryScreen> {
       ),
       body: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-            child: SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: () async {
-                  await NativeTrackerBridge.generateDemoWalk();
-                  await _refresh();
-                  if (!context.mounted) return;
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Generated Abbottabad Demo Walk GPX 1.1 file')),
-                  );
-                },
-                icon: const Icon(Icons.auto_fix_high),
-                label: const Text('Generate Abbottabad Demo Walk (.gpx Fixture)'),
-              ),
-            ),
-          ),
           Expanded(
             child: _loading
                 ? const Center(child: CircularProgressIndicator())
                 : _sessions.isEmpty
                     ? const Center(
-                        child: Text('No saved walks yet. Start a walk or generate a demo GPX.'),
+                        child: Text('No saved walks yet. Finish a walk to save its GPX file.'),
                       )
                     : ListView.builder(
                         padding: const EdgeInsets.all(12),

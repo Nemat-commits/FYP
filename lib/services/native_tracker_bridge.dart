@@ -55,8 +55,4 @@ class NativeTrackerBridge {
     return res as String;
   }
 
-  static Future<Map<String, dynamic>> generateDemoWalk() async {
-    final res = await _methods.invokeMethod('generateDemoWalk');
-    return Map<String, dynamic>.from(res as Map);
-  }
 }
